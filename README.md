@@ -126,3 +126,62 @@ pytest realtime_audio_fx/tests/ -v
 ## License
 
 MIT License
+
+## Stem Separation Feature
+
+Separates an audio track into individual stems (vocals, drums, bass, guitar, piano).
+
+### Requirements
+
+The following must be installed for stem separation to work:
+
+#### System Dependencies
+- **FFmpeg** — required for MP3/audio decoding
+```bash
+  sudo apt install ffmpeg
+```
+
+#### Python Packages
+- **demucs** — AI-powered stem separation by Meta
+```bash
+  pip3 install demucs
+```
+- **torchaudio** — required by demucs for audio processing
+```bash
+  pip3 install torchaudio
+```
+- **numpy** — audio data processing
+```bash
+  pip3 install numpy
+```
+- **soundfile** — reading and writing audio files
+```bash
+  pip3 install soundfile
+```
+
+#### Install Everything at Once
+```bash
+  sudo apt install ffmpeg
+  pip3 install demucs torchaudio numpy soundfile
+```
+
+### How to Use
+1. Load an audio file using the **Load** button
+2. Click the **Separate** button
+3. Wait for processing (may take 5-10 minutes on CPU)
+4. Stems are saved to the `separated/` folder in the project directory
+
+### Output Stems
+| Stem | Description |
+|------|-------------|
+| `vocals.wav` | Lead vocals |
+| `drums.wav` | Drum track |
+| `bass.wav` | Bass guitar |
+| `guitar.wav` | Guitar |
+| `piano.wav` | Piano |
+| `other.wav` | Any remaining instruments |
+
+### Notes
+- Silent or empty stems are automatically discarded
+- Processing time depends on song length and CPU speed
+- Uses the `htdemucs_6s` model for best quality 6-stem separation
