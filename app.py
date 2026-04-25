@@ -16,6 +16,8 @@ from .services.device_service import DeviceService
 from .services.exporter import Exporter
 from .engine.audio_engine import AudioEngine
 from . import config
+# for stem separator 
+from .services.stem_separator import StemSeparator
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,10 @@ class App:
         # Initialize services
         self.file_loader = FileLoader(self.sample_rate)
         self.exporter = Exporter(self.sample_rate)
+
+        # Stem separator 
+        self.stem_separator = StemSeparator()
+        self._stems = {}
 
         # Initialize audio engine
         self.engine = AudioEngine(
@@ -157,3 +163,12 @@ class App:
         """Shutdown the application."""
         logger.info("Shutting down application")
         self.engine.shutdown()
+    
+    # Stem Seperator  
+    def separate_stems(self, two_stems: str = None) -> dict:
+        """Separate current audio file into stems."""
+        if self._audio_file is None:
+            raise ValueError("No audio file loaded")
+        self.stem_separator.separate(self._audio_file.path, two_stems)
+        self._stems = self.stem_separator.get_stems(self._audio_file.filename)
+        return self._stems

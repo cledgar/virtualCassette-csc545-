@@ -1,299 +1,394 @@
 """
-Transport control bar widget.
+Cassette Player main application window.
+
+A minimal, sleek cassette player-themed UI for the audio effects application.
 """
 
+import logging
 import tkinter as tk
-from tkinter import ttk
-from typing import Callable, Optional
+import threading
+from tkinter import filedialog, messagebox
+from typing import TYPE_CHECKING
 
+from .. import config
+from ..models.transport import TransportState
 from .theme import COLORS, FONTS, DIMENSIONS
+from .cassette_display import CassetteDisplay
+from .knob_widget import create_knob
+from .transport_bar import TransportBar, UtilityBar
+
+if TYPE_CHECKING:
+    from ..app import App
+
+logger = logging.getLogger(__name__)
 
 
-class TransportButton(tk.Canvas):
-    """A styled transport button."""
+class MainWindow:
+    """
+    Cassette player-themed main application window.
 
-    def __init__(
-        self,
-        parent,
-        text: str,
-        icon: str,
-        command: Callable[[], None],
-        width: int = 70,
-        height: int = 36,
-        toggle: bool = False,
-    ):
+    Features:
+    - Animated cassette tape display
+    - Rotary knob controls for all parameters
+    - Transport controls (play/pause/stop/loop)
+    - File loading and export
+    """
+
+    def __init__(self, root: tk.Tk, app: "App"):
         """
-        Initialize transport button.
+        Initialize main window.
 
         Args:
-            parent: Parent widget
-            text: Button text
-            icon: Icon character
-            command: Click callback
-            width: Button width
-            height: Button height
-            toggle: Whether this is a toggle button
+            root: Tkinter root window
+            app: Application instance for callbacks
         """
-        super().__init__(
-            parent,
-            width=width,
-            height=height,
+        self.root = root
+        self.app = app
+
+        # Window setup
+        self.root.title("Cassette Player")
+        self.root.geometry(f"{DIMENSIONS['window_width']}x{DIMENSIONS['window_height']}")
+        self.root.minsize(550, 480)
+        self.root.configure(bg=COLORS['bg_dark'])
+        self.root.resizable(True, True)
+
+        # Build UI
+        self._build_ui()
+
+        # Start UI update timer
+        self._update_interval = 100  # ms
+        self._schedule_update()
+
+        logger.info("Cassette player window initialized")
+
+    def _build_ui(self):
+        """Build the complete UI."""
+        # Main container
+        self.main_frame = tk.Frame(self.root, bg=COLORS['bg_dark'])
+        self.main_frame.pack(fill='both', expand=True, padx=15, pady=15)
+
+        # === Section 1: Cassette Display ===
+        self._create_cassette_section()
+
+        # === Section 2: Knob Controls ===
+        self._create_knobs_section()
+
+        # === Section 3: Transport Controls ===
+        self._create_transport_section()
+
+        # === Section 4: Utility Bar ===
+        self._create_utility_section()
+
+    def _create_cassette_section(self):
+        """Create the cassette display section."""
+        self.cassette_frame = tk.Frame(self.main_frame, bg=COLORS['bg_dark'])
+        self.cassette_frame.pack(fill='x', pady=(0, 10))
+
+        # Center the cassette display
+        self.cassette = CassetteDisplay(self.cassette_frame)
+        self.cassette.pack(anchor='center')
+
+    def _create_knobs_section(self):
+        """Create the knob controls section."""
+        # Panel background
+        self.knobs_panel = tk.Frame(
+            self.main_frame,
             bg=COLORS['bg_panel'],
-            highlightthickness=0,
+            padx=20,
+            pady=15,
         )
+        self.knobs_panel.pack(fill='x', pady=10)
 
-        self.text = text
-        self.icon = icon
-        self.command = command
-        self.width = width
-        self.height = height
-        self.toggle = toggle
+        # Row 1: Speed (large, centered)
+        speed_row = tk.Frame(self.knobs_panel, bg=COLORS['bg_panel'])
+        speed_row.pack(fill='x', pady=(0, 10))
 
-        self._hover = False
-        self._active = False
-        self._pressed = False
-
-        self._draw()
-
-        self.bind('<Button-1>', self._on_press)
-        self.bind('<ButtonRelease-1>', self._on_release)
-        self.bind('<Enter>', self._on_enter)
-        self.bind('<Leave>', self._on_leave)
-
-    def _draw(self):
-        """Draw the button."""
-        self.delete('all')
-
-        # Determine colors based on state
-        if self._active:
-            bg_color = COLORS['button_active']
-            text_color = COLORS['bg_dark']
-        elif self._pressed:
-            bg_color = COLORS['accent_dim']
-            text_color = COLORS['text_primary']
-        elif self._hover:
-            bg_color = COLORS['button_hover']
-            text_color = COLORS['text_primary']
-        else:
-            bg_color = COLORS['button_bg']
-            text_color = COLORS['text_primary']
-
-        # Button shape
-        radius = 8
-        self._draw_rounded_rect(
-            2, 2,
-            self.width - 2, self.height - 2,
-            radius=radius,
-            fill=bg_color,
-            outline=COLORS['border_subtle'] if not self._active else '',
+        self.speed_knob = create_knob(
+            speed_row,
+            label="SPEED",
+            min_val=config.SPEED_MIN,
+            max_val=config.SPEED_MAX,
+            initial_val=config.DEFAULT_SPEED,
+            callback=self._on_speed_change,
+            unit="x",
+            size=DIMENSIONS['knob_size_large'],
+            decimals=2,
         )
+        self.speed_knob.pack(anchor='center')
 
-        # Icon and text
-        cx = self.width // 2
-        cy = self.height // 2
+        # Divider
+        tk.Frame(
+            self.knobs_panel,
+            height=1,
+            bg=COLORS['border_subtle'],
+        ).pack(fill='x', pady=10)
 
-        # Just show text (icon included in text)
-        display_text = f"{self.icon} {self.text}" if self.icon else self.text
-        self.create_text(
-            cx, cy,
-            text=display_text,
+        # Row 2: Echo controls
+        echo_row = tk.Frame(self.knobs_panel, bg=COLORS['bg_panel'])
+        echo_row.pack(fill='x', pady=5)
+
+        # Echo label
+        tk.Label(
+            echo_row,
+            text="ECHO",
+            font=FONTS['label_small'],
+            fg=COLORS['text_muted'],
+            bg=COLORS['bg_panel'],
+        ).pack(anchor='center', pady=(0, 5))
+
+        # Echo knobs container
+        echo_knobs = tk.Frame(echo_row, bg=COLORS['bg_panel'])
+        echo_knobs.pack(anchor='center')
+
+        self.echo_mix_knob = create_knob(
+            echo_knobs,
+            label="MIX",
+            min_val=0.0,
+            max_val=1.0,
+            initial_val=config.DEFAULT_ECHO_MIX,
+            callback=self._on_echo_mix_change,
+            unit="%",
+            size=DIMENSIONS['knob_size_small'],
+            decimals=0,
+        )
+        self.echo_mix_knob.pack(side='left', padx=15)
+        # Override formatter for percentage
+        self.echo_mix_knob.formatter = lambda v: f"{int(v * 100)}%"
+        self.echo_mix_knob._update_display()
+
+        self.echo_delay_knob = create_knob(
+            echo_knobs,
+            label="DELAY",
+            min_val=config.ECHO_DELAY_MIN_MS,
+            max_val=config.ECHO_DELAY_MAX_MS,
+            initial_val=config.DEFAULT_ECHO_DELAY_MS,
+            callback=self._on_echo_delay_change,
+            unit="ms",
+            size=DIMENSIONS['knob_size_small'],
+            decimals=0,
+        )
+        self.echo_delay_knob.pack(side='left', padx=15)
+
+        self.echo_feedback_knob = create_knob(
+            echo_knobs,
+            label="FEEDBACK",
+            min_val=0.0,
+            max_val=config.ECHO_FEEDBACK_MAX,
+            initial_val=config.DEFAULT_ECHO_FEEDBACK,
+            callback=self._on_echo_feedback_change,
+            unit="%",
+            size=DIMENSIONS['knob_size_small'],
+            decimals=0,
+        )
+        self.echo_feedback_knob.pack(side='left', padx=15)
+        # Override formatter for percentage
+        self.echo_feedback_knob.formatter = lambda v: f"{int(v * 100)}%"
+        self.echo_feedback_knob._update_display()
+
+        # Divider
+        tk.Frame(
+            self.knobs_panel,
+            height=1,
+            bg=COLORS['border_subtle'],
+        ).pack(fill='x', pady=10)
+
+        # Row 3: Output gain
+        gain_row = tk.Frame(self.knobs_panel, bg=COLORS['bg_panel'])
+        gain_row.pack(fill='x', pady=5)
+
+        self.gain_knob = create_knob(
+            gain_row,
+            label="OUTPUT",
+            min_val=config.OUTPUT_GAIN_MIN_DB,
+            max_val=config.OUTPUT_GAIN_MAX_DB,
+            initial_val=config.DEFAULT_OUTPUT_GAIN_DB,
+            callback=self._on_gain_change,
+            unit=" dB",
+            size=DIMENSIONS['knob_size_medium'],
+            decimals=1,
+        )
+        self.gain_knob.pack(anchor='center')
+
+    def _create_transport_section(self):
+        """Create the transport controls section."""
+        self.transport_bar = TransportBar(
+            self.main_frame,
+            on_play=self._on_play,
+            on_pause=self._on_pause,
+            on_stop=self._on_stop,
+            on_loop=self._on_loop_toggle,
+        )
+        self.transport_bar.pack(fill='x', pady=5)
+
+    def _create_utility_section(self):
+        """Create the utility bar section."""
+        self.utility_bar = UtilityBar(
+            self.main_frame,
+            on_load=self._on_open_file,
+            on_export=self._on_export,
+            on_separate=self._on_separate,  # Ginnie 
+        )
+        self.utility_bar.pack(fill='x', pady=(5, 0))
+        
+        #Ginnie
+
+        self.status_label = tk.Label(
+            self.main_frame,
+            text="",
             font=FONTS['label'],
-            fill=text_color,
-            anchor='center',
+            fg=COLORS['text_muted'],
+            bg=COLORS['bg_dark'],
         )
+        self.status_label.pack(pady=5)
 
-    def _draw_rounded_rect(self, x1, y1, x2, y2, radius=10, **kwargs):
-        """Draw a rounded rectangle."""
-        points = [
-            x1 + radius, y1,
-            x2 - radius, y1,
-            x2, y1,
-            x2, y1 + radius,
-            x2, y2 - radius,
-            x2, y2,
-            x2 - radius, y2,
-            x1 + radius, y2,
-            x1, y2,
-            x1, y2 - radius,
-            x1, y1 + radius,
-            x1, y1,
-            x1 + radius, y1,
+    # === Event Handlers ===
+
+    def _on_open_file(self):
+        """Handle file open."""
+        filetypes = [
+            ("Audio Files", "*.wav *.flac *.ogg *.mp3 *.aiff *.aif"),
+            ("WAV Files", "*.wav"),
+            ("FLAC Files", "*.flac"),
+            ("All Files", "*.*"),
         ]
-        return self.create_polygon(points, smooth=True, **kwargs)
-
-    def _on_press(self, event):
-        """Handle mouse press."""
-        self._pressed = True
-        self._draw()
-
-    def _on_release(self, event):
-        """Handle mouse release."""
-        self._pressed = False
-        if self._hover:
-            self.command()
-        self._draw()
-
-    def _on_enter(self, event):
-        """Handle mouse enter."""
-        self._hover = True
-        self.config(cursor='hand2')
-        self._draw()
-
-    def _on_leave(self, event):
-        """Handle mouse leave."""
-        self._hover = False
-        self._pressed = False
-        self.config(cursor='')
-        self._draw()
-
-    def set_active(self, active: bool):
-        """Set the active state."""
-        self._active = active
-        self._draw()
-
-
-class TransportBar(tk.Frame):
-    """
-    Transport control bar with play/pause/stop/loop buttons.
-    """
-
-    def __init__(
-        self,
-        parent,
-        on_play: Callable[[], None],
-        on_pause: Callable[[], None],
-        on_stop: Callable[[], None],
-        on_loop: Callable[[], None],
-    ):
-        """
-        Initialize transport bar.
-
-        Args:
-            parent: Parent widget
-            on_play: Play callback
-            on_pause: Pause callback
-            on_stop: Stop callback
-            on_loop: Loop toggle callback
-        """
-        super().__init__(parent, bg=COLORS['bg_panel'])
-
-        self.on_play = on_play
-        self.on_pause = on_pause
-        self.on_stop = on_stop
-        self.on_loop = on_loop
-
-        self._build_ui()
-
-    def _build_ui(self):
-        """Build the transport bar UI."""
-        # Center container
-        container = tk.Frame(self, bg=COLORS['bg_panel'])
-        container.pack(pady=10)
-
-        # Transport buttons
-        self.play_btn = TransportButton(
-            container,
-            text="Play",
-            icon="\u25B6",  # Play triangle
-            command=self.on_play,
+        path = filedialog.askopenfilename(
+            title="Load Audio File",
+            filetypes=filetypes
         )
-        self.play_btn.pack(side='left', padx=5)
+        if path:
+            try:
+                self.app.load_file(path)
+                # Update cassette display with file info
+                info = self.app.get_file_info()
+                # Extract just filename for display
+                filename = path.split('/')[-1].split('\\')[-1]
+                self.cassette.set_file_name(filename)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load file:\n{e}")
 
-        self.pause_btn = TransportButton(
-            container,
-            text="Pause",
-            icon="\u23F8",  # Pause
-            command=self.on_pause,
+    def _on_play(self):
+        """Handle play button."""
+        self.app.play()
+
+    def _on_pause(self):
+        """Handle pause button."""
+        self.app.pause()
+
+    def _on_stop(self):
+        """Handle stop button."""
+        self.app.stop()
+
+    def _on_loop_toggle(self):
+        """Handle loop toggle."""
+        transport = self.app.get_transport_info()
+        self.app.set_loop(not transport.loop_enabled)
+
+    def _on_speed_change(self, value: float):
+        """Handle speed knob change."""
+        self.app.set_parameter("speed", value)
+        self.cassette.set_speed(value)
+
+    def _on_echo_mix_change(self, value: float):
+        """Handle echo mix knob change."""
+        self.app.set_parameter("echo_mix", value)
+
+    def _on_echo_delay_change(self, value: float):
+        """Handle echo delay knob change."""
+        self.app.set_parameter("echo_delay_ms", value)
+
+    def _on_echo_feedback_change(self, value: float):
+        """Handle echo feedback knob change."""
+        self.app.set_parameter("echo_feedback", value)
+
+    def _on_gain_change(self, value: float):
+        """Handle output gain knob change."""
+        self.app.set_parameter("output_gain_db", value)
+
+    def _on_export(self):
+        """Handle export button."""
+        if not self.app.has_audio_loaded():
+            messagebox.showwarning("Warning", "No audio file loaded")
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="Export Processed Audio",
+            defaultextension=".wav",
+            filetypes=[("WAV Files", "*.wav")],
         )
-        self.pause_btn.pack(side='left', padx=5)
+        if not path:
+            return
 
-        self.stop_btn = TransportButton(
-            container,
-            text="Stop",
-            icon="\u23F9",  # Stop
-            command=self.on_stop,
+        try:
+            self.app.export(path)
+            messagebox.showinfo("Success", f"Audio exported to:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Export failed:\n{e}")
+
+    #Ginnie
+    def _on_separate(self):
+        if not self.app.has_audio_loaded():
+            messagebox.showwarning("Warning", "No audio file loaded")
+            return
+
+        def run_separation():
+            try:
+                stems = self.app.separate_stems()
+                self.root.after(0, lambda: self.status_label.config(text="✅ Stems separated!"))
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "Done!", f"Stems saved to:\n{list(stems.values())[0].parent}"
+                ))
+            except Exception as e:
+                self.root.after(0, lambda: self.status_label.config(text="❌ Separation failed"))
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Error", f"Separation failed:\n{e}"
+                ))
+
+        self.status_label.config(text="⏳ Separating stems, please wait...")
+        thread = threading.Thread(target=run_separation, daemon=True)
+        thread.start()
+
+    def _reset_knobs(self):
+        """Reset all knobs to default values."""
+        self.speed_knob.set_value(config.DEFAULT_SPEED)
+        self.echo_mix_knob.set_value(config.DEFAULT_ECHO_MIX)
+        self.echo_delay_knob.set_value(config.DEFAULT_ECHO_DELAY_MS)
+        self.echo_feedback_knob.set_value(config.DEFAULT_ECHO_FEEDBACK)
+        self.gain_knob.set_value(config.DEFAULT_OUTPUT_GAIN_DB)
+
+    # === UI Update Loop ===
+
+    def _schedule_update(self):
+        """Schedule periodic UI update."""
+        self._update_ui()
+        self.root.after(self._update_interval, self._schedule_update)
+
+    def _update_ui(self):
+        """Update UI with current playback state."""
+        transport = self.app.get_transport_info()
+
+        # Update cassette animation state
+        is_playing = transport.state == TransportState.PLAYING
+        self.cassette.set_playing(is_playing)
+
+        # Update time display
+        pos = transport.position_seconds
+        total = transport.total_seconds
+        pos_str = f"{int(pos // 60)}:{int(pos % 60):02d}"
+        total_str = f"{int(total // 60)}:{int(total % 60):02d}"
+        self.cassette.set_time(pos_str, total_str)
+
+        # Update transport button states
+        self.transport_bar.set_state(
+            playing=(transport.state == TransportState.PLAYING),
+            paused=(transport.state == TransportState.PAUSED),
+            loop_enabled=transport.loop_enabled,
         )
-        self.stop_btn.pack(side='left', padx=5)
 
-        # Spacer
-        tk.Frame(container, width=20, bg=COLORS['bg_panel']).pack(side='left')
+        # Check for callback errors
+        error = self.app.get_engine_error()
+        if error:
+            messagebox.showerror("Audio Error", f"Audio engine error:\n{error}")
 
-        self.loop_btn = TransportButton(
-            container,
-            text="Loop",
-            icon="\u27F2",  # Loop arrow
-            command=self._on_loop_click,
-            toggle=True,
-        )
-        self.loop_btn.pack(side='left', padx=5)
-
-        self._loop_enabled = False
-
-    def _on_loop_click(self):
-        """Handle loop button click."""
-        self._loop_enabled = not self._loop_enabled
-        self.loop_btn.set_active(self._loop_enabled)
-        self.on_loop()
-
-    def set_state(self, playing: bool, paused: bool, loop_enabled: bool):
-        """Update button states based on transport state."""
-        self.play_btn.set_active(playing and not paused)
-        self.pause_btn.set_active(paused)
-        self.stop_btn.set_active(not playing and not paused)
-        self._loop_enabled = loop_enabled
-        self.loop_btn.set_active(loop_enabled)
-
-
-class UtilityBar(tk.Frame):
-    """
-    Utility bar with file/export buttons.
-    """
-
-    def __init__(
-        self,
-        parent,
-        on_load: Callable[[], None],
-        on_export: Callable[[], None],
-    ):
-        """
-        Initialize utility bar.
-
-        Args:
-            parent: Parent widget
-            on_load: Load file callback
-            on_export: Export callback
-        """
-        super().__init__(parent, bg=COLORS['bg_panel'])
-
-        self.on_load = on_load
-        self.on_export = on_export
-
-        self._build_ui()
-
-    def _build_ui(self):
-        """Build the utility bar UI."""
-        container = tk.Frame(self, bg=COLORS['bg_panel'])
-        container.pack(pady=8)
-
-        self.load_btn = TransportButton(
-            container,
-            text="Load",
-            icon="",
-            command=self.on_load,
-            width=80,
-        )
-        self.load_btn.pack(side='left', padx=8)
-
-        self.export_btn = TransportButton(
-            container,
-            text="Export",
-            icon="",
-            command=self.on_export,
-            width=80,
-        )
-        self.export_btn.pack(side='left', padx=8)
-
-    def set_export_enabled(self, enabled: bool):
-        """Enable or disable the export button."""
-        # Visual indication could be added here
-        pass
+    def run(self):
+        """Start the main event loop."""
+        self.root.mainloop()

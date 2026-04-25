@@ -6,6 +6,7 @@ A minimal, sleek cassette player-themed UI for the audio effects application.
 
 import logging
 import tkinter as tk
+import threading
 from tkinter import filedialog, messagebox
 from typing import TYPE_CHECKING
 
@@ -225,8 +226,20 @@ class MainWindow:
             self.main_frame,
             on_load=self._on_open_file,
             on_export=self._on_export,
+            on_separate=self._on_separate,  # Ginnie 
         )
         self.utility_bar.pack(fill='x', pady=(5, 0))
+        
+        #Ginnie
+
+        self.status_label = tk.Label(
+            self.main_frame,
+            text="",
+            font=FONTS['label'],
+            fg=COLORS['text_muted'],
+            bg=COLORS['bg_dark'],
+        )
+        self.status_label.pack(pady=5)
 
     # === Event Handlers ===
 
@@ -310,6 +323,29 @@ class MainWindow:
             messagebox.showinfo("Success", f"Audio exported to:\n{path}")
         except Exception as e:
             messagebox.showerror("Error", f"Export failed:\n{e}")
+
+    #Ginnie
+    def _on_separate(self):
+        if not self.app.has_audio_loaded():
+            messagebox.showwarning("Warning", "No audio file loaded")
+            return
+
+        def run_separation():
+            try:
+                stems = self.app.separate_stems()
+                self.root.after(0, lambda: self.status_label.config(text="✅ Stems separated!"))
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "Done!", f"Stems saved to:\n{list(stems.values())[0].parent}"
+                ))
+            except Exception as e:
+                self.root.after(0, lambda: self.status_label.config(text="❌ Separation failed"))
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Error", f"Separation failed:\n{e}"
+                ))
+
+        self.status_label.config(text="⏳ Separating stems, please wait...")
+        thread = threading.Thread(target=run_separation, daemon=True)
+        thread.start()
 
     def _reset_knobs(self):
         """Reset all knobs to default values."""
