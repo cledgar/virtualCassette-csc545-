@@ -10,15 +10,14 @@ import threading
 from tkinter import filedialog, messagebox
 from typing import TYPE_CHECKING
 
-from .. import config
-from ..models.transport import TransportState
+import config
+from models.transport import TransportState
 from .theme import COLORS, FONTS, DIMENSIONS
-from .cassette_display import CassetteDisplay
 from .knob_widget import create_knob
 from .transport_bar import TransportBar, UtilityBar
 
 if TYPE_CHECKING:
-    from ..app import App
+    from app import App
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +66,8 @@ class MainWindow:
         self.main_frame = tk.Frame(self.root, bg=COLORS['bg_dark'])
         self.main_frame.pack(fill='both', expand=True, padx=15, pady=15)
 
-        # === Section 1: Cassette Display ===
-        self._create_cassette_section()
+        # === Section 1: Track List ===
+        self._create_tracks_section()
 
         # === Section 2: Knob Controls ===
         self._create_knobs_section()
@@ -79,14 +78,109 @@ class MainWindow:
         # === Section 4: Utility Bar ===
         self._create_utility_section()
 
-    def _create_cassette_section(self):
-        """Create the cassette display section."""
-        self.cassette_frame = tk.Frame(self.main_frame, bg=COLORS['bg_dark'])
-        self.cassette_frame.pack(fill='x', pady=(0, 10))
+    def _create_tracks_section(self):
+        """Create the track list section."""
+        self.tracks_frame = tk.Frame(self.main_frame, bg=COLORS['bg_dark'])
+        self.tracks_frame.pack(fill='x', pady=(0, 10))
 
-        # Center the cassette display
-        self.cassette = CassetteDisplay(self.cassette_frame)
-        self.cassette.pack(anchor='center')
+        # Track listbox
+        self.track_listbox = tk.Listbox(
+            self.tracks_frame,
+            height=4,
+            bg=COLORS['bg_panel'],
+            fg=COLORS['text_primary'],
+            selectmode=tk.MULTIPLE,
+            font=FONTS['value']
+        )
+        self.track_listbox.pack(fill='x', padx=5, pady=5)
+
+        # Bind selection change
+        self.track_listbox.bind('<<ListboxSelect>>', self._on_track_selection_change)
+
+        # Buttons frame
+        buttons_frame = tk.Frame(self.tracks_frame, bg=COLORS['bg_dark'])
+        buttons_frame.pack(fill='x')
+
+        # Select all button
+        self.select_all_btn = tk.Button(
+            buttons_frame,
+            text="Select All",
+            command=self._on_select_all,
+            bg=COLORS['button_bg'],
+            fg=COLORS['button_text'],
+            font=FONTS['label_small']
+        )
+        self.select_all_btn.pack(side='left', padx=5, pady=5)
+
+        # Deselect all button
+        self.deselect_all_btn = tk.Button(
+            buttons_frame,
+            text="Deselect All",
+            command=self._on_deselect_all,
+            bg=COLORS['button_bg'],
+            fg=COLORS['button_text'],
+            font=FONTS['label_small']
+        )
+        self.deselect_all_btn.pack(side='left', padx=5, pady=5)
+
+        # Remove selected button
+        self.remove_btn = tk.Button(
+            buttons_frame,
+            text="Remove Selected",
+            command=self._on_remove_selected,
+            bg=COLORS['button_bg'],
+            fg=COLORS['button_text'],
+            font=FONTS['label_small']
+        )
+        self.remove_btn.pack(side='left', padx=5, pady=5)
+
+    def _on_track_selection_change(self, event):
+        """Handle track listbox selection change."""
+        selected_indices = self.track_listbox.curselection()
+        files = self.app.get_audio_files()
+        
+        # Deselect all first
+        self.app.deselect_all_files()
+        
+        # Select the chosen ones
+        for index in selected_indices:
+            file_id = files[index].id
+            self.app.select_file(file_id)
+
+    def _update_track_list(self):
+        """Update the track list display."""
+        self.track_listbox.delete(0, tk.END)
+        files = self.app.get_audio_files()
+        selected = self.app.get_selected_files()
+        
+        for i, audio_file in enumerate(files):
+            display_text = f"{audio_file.filename} ({audio_file.get_metadata_string()})"
+            self.track_listbox.insert(tk.END, display_text)
+            
+            # Select in listbox if selected in app
+            if audio_file.id in selected:
+                self.track_listbox.selection_set(i)
+
+    def _on_select_all(self):
+        """Select all tracks."""
+        self.app.select_all_files()
+        self._update_track_list()
+
+    def _on_deselect_all(self):
+        """Deselect all tracks."""
+        self.app.deselect_all_files()
+        self._update_track_list()
+
+    def _on_remove_selected(self):
+        """Remove selected tracks."""
+        selected_indices = self.track_listbox.curselection()
+        files = self.app.get_audio_files()
+        
+        for index in reversed(selected_indices):
+            file_id = files[index].id
+            self.app.remove_file(file_id)
+        
+        self._update_track_list()
 
     def _create_knobs_section(self):
         """Create the knob controls section."""
@@ -216,7 +310,7 @@ class MainWindow:
             on_play=self._on_play,
             on_pause=self._on_pause,
             on_stop=self._on_stop,
-            on_loop=self._on_loop_toggle,
+            on_loop_toggle=self._on_loop_toggle,
         )
         self.transport_bar.pack(fill='x', pady=5)
 
@@ -226,7 +320,9 @@ class MainWindow:
             self.main_frame,
             on_load=self._on_open_file,
             on_export=self._on_export,
-            on_separate=self._on_separate,  # Ginnie 
+            on_separate_stems=self._on_separate_stems,
+            on_load_stems=self._on_load_stems,
+            on_load_existing_stems=self._on_load_existing_stems,
         )
         self.utility_bar.pack(fill='x', pady=(5, 0))
         
@@ -251,20 +347,17 @@ class MainWindow:
             ("FLAC Files", "*.flac"),
             ("All Files", "*.*"),
         ]
-        path = filedialog.askopenfilename(
-            title="Load Audio File",
+        paths = filedialog.askopenfilenames(
+            title="Load Audio Files",
             filetypes=filetypes
         )
-        if path:
-            try:
-                self.app.load_file(path)
-                # Update cassette display with file info
-                info = self.app.get_file_info()
-                # Extract just filename for display
-                filename = path.split('/')[-1].split('\\')[-1]
-                self.cassette.set_file_name(filename)
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to load file:\n{e}")
+        if paths:
+            for path in paths:
+                try:
+                    self.app.load_file(path)
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to load file {path}:\n{e}")
+            self._update_track_list()
 
     def _on_play(self):
         """Handle play button."""
@@ -286,7 +379,6 @@ class MainWindow:
     def _on_speed_change(self, value: float):
         """Handle speed knob change."""
         self.app.set_parameter("speed", value)
-        self.cassette.set_speed(value)
 
     def _on_echo_mix_change(self, value: float):
         """Handle echo mix knob change."""
@@ -325,7 +417,8 @@ class MainWindow:
             messagebox.showerror("Error", f"Export failed:\n{e}")
 
     #Ginnie
-    def _on_separate(self):
+    def _on_separate_stems(self):
+        """Handle separate stems button."""
         if not self.app.has_audio_loaded():
             messagebox.showwarning("Warning", "No audio file loaded")
             return
@@ -335,18 +428,60 @@ class MainWindow:
                 stems = self.app.separate_stems()
                 self.root.after(0, lambda: self.status_label.config(text="✅ Stems separated!"))
                 self.root.after(0, lambda: messagebox.showinfo(
-                    "Done!", f"Stems saved to:\n{list(stems.values())[0].parent}"
+                    "Stem Separation Complete", 
+                    f"Stems created:\n{chr(10).join(stems.keys())}\n\nClick 'Load Stems' to add them as tracks."
                 ))
             except Exception as e:
                 self.root.after(0, lambda: self.status_label.config(text="❌ Separation failed"))
-                self.root.after(0, lambda: messagebox.showerror(
-                    "Error", f"Separation failed:\n{e}"
-                ))
+                error_msg = str(e)
+                if "FFmpeg" in error_msg or "torchcodec" in error_msg:
+                    self.root.after(0, lambda: messagebox.showerror(
+                        "Stem Separation Error", 
+                        f"Stem separation requires FFmpeg to be installed.\n\n"
+                        f"Please download FFmpeg from: https://ffmpeg.org/download.html\n\n"
+                        f"Download the 'ffmpeg-release-essentials.zip', extract it, "
+                        f"and add the 'bin' folder to your system PATH.\n\n"
+                        f"Alternatively, you can use online stem separation services:\n"
+                        f"• Moises.ai\n"
+                        f"• SplitSong.com\n"
+                        f"• Lalal.ai\n\n"
+                        f"Error details: {error_msg}"
+                    ))
+                else:
+                    self.root.after(0, lambda: messagebox.showerror(
+                        "Error", f"Separation failed:\n{e}"
+                    ))
 
         self.status_label.config(text="⏳ Separating stems, please wait...")
         thread = threading.Thread(target=run_separation, daemon=True)
         thread.start()
 
+    def _on_load_stems(self):
+        """Handle load stems button."""
+        try:
+            self.app.load_stems_as_tracks()
+            self._update_track_list()
+            self.status_label.config(text="Stems loaded as individual tracks")
+            messagebox.showinfo("Stems Loaded", "Separated stems have been loaded as individual tracks.")
+        except Exception as e:
+            self.status_label.config(text="")
+            messagebox.showerror("Load Stems Error", f"Failed to load stems:\n{e}")
+    def _on_load_existing_stems(self):
+        """Handle load existing stems button."""
+        directory = filedialog.askdirectory(
+            title="Select Separated Stem Directory"
+        )
+        if not directory:
+            return
+
+        try:
+            self.app.load_stems_from_directory(directory)
+            self._update_track_list()
+            self.status_label.config(text="Existing stems loaded as tracks")
+            messagebox.showinfo("Stems Loaded", "Existing separated stems have been loaded as individual tracks.")
+        except Exception as e:
+            self.status_label.config(text="")
+            messagebox.showerror("Load Stems Error", f"Failed to load stems:\n{e}")
     def _reset_knobs(self):
         """Reset all knobs to default values."""
         self.speed_knob.set_value(config.DEFAULT_SPEED)
@@ -366,16 +501,8 @@ class MainWindow:
         """Update UI with current playback state."""
         transport = self.app.get_transport_info()
 
-        # Update cassette animation state
-        is_playing = transport.state == TransportState.PLAYING
-        self.cassette.set_playing(is_playing)
-
-        # Update time display
-        pos = transport.position_seconds
-        total = transport.total_seconds
-        pos_str = f"{int(pos // 60)}:{int(pos % 60):02d}"
-        total_str = f"{int(total // 60)}:{int(total % 60):02d}"
-        self.cassette.set_time(pos_str, total_str)
+        # Update track list (in case selection changed externally)
+        self._update_track_list()
 
         # Update transport button states
         self.transport_bar.set_state(

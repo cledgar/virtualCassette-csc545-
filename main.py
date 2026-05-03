@@ -2,18 +2,21 @@
 Entry point for the Real-Time Audio FX application.
 """
 
+from asyncio.log import logger
 import logging
 import sys
 import tkinter as tk
 from pathlib import Path
 
-# Add parent directory to path for imports when running directly
-if __name__ == "__main__":
-    sys.path.insert(0, str(Path(__file__).parent.parent))
+# Setup path for imports
+current_dir = Path(__file__).parent
+if str(current_dir) not in sys.path:
+    sys.path.insert(0, str(current_dir))
 
-from realtime_audio_fx import config
-from realtime_audio_fx.app import App
-from realtime_audio_fx.ui.main_window import MainWindow
+# Import application modules
+import config
+from app import App
+from ui.main_window import MainWindow
 
 
 def setup_logging() -> None:
@@ -56,10 +59,14 @@ def main() -> None:
         window.run()
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
+        app.shutdown()
     except Exception as e:
         logger.exception(f"Unhandled exception: {e}")
-    finally:
         app.shutdown()
+
+
+if __name__ == "__main__":
+    main()
 
     logger.info("Application terminated")
 

@@ -6,7 +6,7 @@ Implements a circular delay buffer for live echo effects.
 
 import numpy as np
 
-from .. import config
+import config
 
 
 class EchoProcessor:
