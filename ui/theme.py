@@ -57,7 +57,7 @@ FONTS = {
 # Dimensions
 DIMENSIONS = {
     'window_width': 600,
-    'window_height': 520,
+    'window_height': 700,
     'padding': 15,
     'knob_size_large': 80,
     'knob_size_medium': 65,

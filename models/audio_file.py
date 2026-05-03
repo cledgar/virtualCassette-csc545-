@@ -2,9 +2,10 @@
 Audio file model representing loaded audio data.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+import uuid
 
 import numpy as np
 
@@ -25,6 +26,7 @@ class AudioFile:
     channel_count: int
     total_frames: int
     data: np.ndarray  # Shape: (frames, channels), dtype: float32
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     @property
     def filename(self) -> str:

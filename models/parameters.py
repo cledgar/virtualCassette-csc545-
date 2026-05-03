@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-from .. import config
+import config
 
 
 @dataclass
@@ -44,7 +44,7 @@ class EffectParameters:
 
 class ParameterStore:
     """
-    Thread-safe store for effect parameters.
+    Thread-safe store for effect parameters per file.
 
     Provides atomic snapshot reads and updates to ensure
     the audio callback always sees consistent parameter values.
@@ -52,44 +52,105 @@ class ParameterStore:
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._params = EffectParameters()
+        self._file_params: dict[str, EffectParameters] = {}  # file_id -> params
+        self._defaults = EffectParameters()
 
     def get_snapshot(self) -> EffectParameters:
         """
-        Get a copy of current parameters.
+        Get a copy of default parameters (for backward compatibility).
         Safe to call from audio callback - uses short lock.
         """
         with self._lock:
-            return copy.copy(self._params)
+            return copy.copy(self._defaults)
 
-    def update(self, **kwargs: Any) -> None:
+    def get_snapshot_for_file(self, file_id: str) -> EffectParameters:
         """
-        Update one or more parameters atomically.
+        Get a snapshot of parameters for a specific file.
+        Falls back to defaults if file not found.
+        Safe to call from audio callback - uses short lock.
+        """
+        with self._lock:
+            if file_id in self._file_params:
+                return copy.copy(self._file_params[file_id])
+            else:
+                return copy.copy(self._defaults)
+
+    def get_snapshot_all(self) -> dict[str, EffectParameters]:
+        """
+        Get snapshots for all files.
+        Returns dict of file_id -> EffectParameters
+        """
+        with self._lock:
+            return {fid: copy.copy(params) for fid, params in self._file_params.items()}
+
+    def update(self, file_ids: list[str] | None = None, **kwargs: Any) -> None:
+        """
+        Update one or more parameters for specified files.
+        If file_ids is None, updates defaults.
 
         Example:
-            store.update(speed=1.5, echo_mix=0.3)
+            store.update(file_ids=['file1', 'file2'], speed=1.5, echo_mix=0.3)
         """
         with self._lock:
-            for key, value in kwargs.items():
-                if hasattr(self._params, key):
-                    setattr(self._params, key, value)
-                else:
-                    raise ValueError(f"Unknown parameter: {key}")
-
-    def reset(self) -> None:
-        """Reset all parameters to defaults."""
-        with self._lock:
-            self._params = EffectParameters()
-
-    def get_value(self, name: str) -> Any:
-        """Get a single parameter value."""
-        with self._lock:
-            return getattr(self._params, name)
-
-    def set_value(self, name: str, value: Any) -> None:
-        """Set a single parameter value."""
-        with self._lock:
-            if hasattr(self._params, name):
-                setattr(self._params, name, value)
+            if file_ids is None:
+                # Update defaults
+                for key, value in kwargs.items():
+                    if hasattr(self._defaults, key):
+                        setattr(self._defaults, key, value)
+                    else:
+                        raise ValueError(f"Unknown parameter: {key}")
             else:
-                raise ValueError(f"Unknown parameter: {name}")
+                # Update specific files
+                for file_id in file_ids:
+                    if file_id not in self._file_params:
+                        self._file_params[file_id] = copy.copy(self._defaults)
+                    params = self._file_params[file_id]
+                    for key, value in kwargs.items():
+                        if hasattr(params, key):
+                            setattr(params, key, value)
+                        else:
+                            raise ValueError(f"Unknown parameter: {key}")
+
+    def reset(self, file_ids: list[str] | None = None) -> None:
+        """Reset parameters to defaults for specified files, or all if None."""
+        with self._lock:
+            if file_ids is None:
+                self._file_params.clear()
+            else:
+                for file_id in file_ids:
+                    self._file_params[file_id] = copy.copy(self._defaults)
+
+    def get_value(self, name: str, file_id: str | None = None) -> Any:
+        """Get a single parameter value for a file, or defaults if None."""
+        with self._lock:
+            params = self._file_params.get(file_id, self._defaults) if file_id else self._defaults
+            return getattr(params, name)
+
+    def set_value(self, name: str, value: Any, file_ids: list[str] | None = None) -> None:
+        """Set a single parameter value for specified files, or defaults if None."""
+        with self._lock:
+            if file_ids is None:
+                if hasattr(self._defaults, name):
+                    setattr(self._defaults, name, value)
+                else:
+                    raise ValueError(f"Unknown parameter: {name}")
+            else:
+                for file_id in file_ids:
+                    if file_id not in self._file_params:
+                        self._file_params[file_id] = copy.copy(self._defaults)
+                    params = self._file_params[file_id]
+                    if hasattr(params, name):
+                        setattr(params, name, value)
+                    else:
+                        raise ValueError(f"Unknown parameter: {name}")
+
+    def add_file(self, file_id: str) -> None:
+        """Add a new file with default parameters."""
+        with self._lock:
+            if file_id not in self._file_params:
+                self._file_params[file_id] = copy.copy(self._defaults)
+
+    def remove_file(self, file_id: str) -> None:
+        """Remove parameters for a file."""
+        with self._lock:
+            self._file_params.pop(file_id, None)

@@ -8,7 +8,7 @@ from typing import Optional, List
 
 import sounddevice as sd
 
-from .. import config
+import config
 
 logger = logging.getLogger(__name__)
 

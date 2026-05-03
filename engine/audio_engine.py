@@ -11,12 +11,12 @@ from typing import Optional, Callable
 import numpy as np
 import sounddevice as sd
 
-from ..models.parameters import ParameterStore
-from ..models.transport import TransportState, TransportInfo
-from ..models.audio_file import AudioFile
+from models.parameters import ParameterStore
+from models.transport import TransportState, TransportInfo
+from models.audio_file import AudioFile
 from .source_reader import SourceReader
 from .block_processor import BlockProcessor
-from .. import config
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +55,10 @@ class AudioEngine:
         self._transport_state = TransportState.STOPPED
         self._loop_enabled = False
 
-        # Audio data
-        self._audio_file: Optional[AudioFile] = None
-        self._source_reader: Optional[SourceReader] = None
-        self._block_processor: Optional[BlockProcessor] = None
+        # Audio data (multi-file support)
+        self._audio_files: dict[str, AudioFile] = {}
+        self._source_readers: dict[str, SourceReader] = {}
+        self._block_processors: dict[str, BlockProcessor] = {}
 
         # Output stream
         self._stream: Optional[sd.OutputStream] = None
@@ -84,32 +84,53 @@ class AudioEngine:
         Args:
             audio_file: Loaded audio file model
         """
-        # Stop any current playback
-        self.stop()
+        file_id = audio_file.id
 
-        self._audio_file = audio_file
-        self._channels = audio_file.channel_count
+        # Stop any current playback if this is the first file
+        if not self._audio_files:
+            self.stop()
+
+        self._audio_files[file_id] = audio_file
+        self._channels = audio_file.channel_count  # Assume all files have same channels
 
         # Create source reader
-        self._source_reader = SourceReader(
+        self._source_readers[file_id] = SourceReader(
             audio_file.data,
             audio_file.total_frames,
             loop_enabled=self._loop_enabled
         )
 
         # Create block processor
-        self._block_processor = BlockProcessor(
-            self._source_reader,
+        self._block_processors[file_id] = BlockProcessor(
+            self._source_readers[file_id],
             self.parameter_store,
             self.sample_rate,
-            self._channels
+            self._channels,
+            file_id  # Pass file_id to BlockProcessor
         )
 
         logger.info(f"Loaded audio: {audio_file.filename}")
 
+    def remove_audio(self, file_id: str) -> None:
+        """
+        Remove audio file from playback.
+
+        Args:
+            file_id: ID of the file to remove
+        """
+        if file_id in self._audio_files:
+            del self._audio_files[file_id]
+            del self._source_readers[file_id]
+            del self._block_processors[file_id]
+            logger.info(f"Removed audio: {file_id}")
+
+    def has_audio_loaded(self) -> bool:
+        """Check if any audio files are loaded."""
+        return len(self._audio_files) > 0
+
     def play(self) -> None:
         """Start or resume playback."""
-        if self._audio_file is None:
+        if not self._audio_files:
             logger.warning("Cannot play: no audio loaded")
             return
 
@@ -122,7 +143,8 @@ class AudioEngine:
 
             # Reset position if stopped
             if self._transport_state == TransportState.STOPPED:
-                self._block_processor.reset()
+                for processor in self._block_processors.values():
+                    processor.reset()
 
             self._transport_state = TransportState.PLAYING
 
@@ -143,31 +165,31 @@ class AudioEngine:
         with self._transport_lock:
             self._transport_state = TransportState.STOPPED
 
-        if self._block_processor:
-            self._block_processor.reset()
+        for processor in self._block_processors.values():
+            processor.reset()
 
         logger.info("Playback stopped")
 
     def set_loop(self, enabled: bool) -> None:
         """Enable or disable looping."""
         self._loop_enabled = enabled
-        if self._source_reader:
-            self._source_reader.set_loop(enabled)
+        for source_reader in self._source_readers.values():
+            source_reader.set_loop(enabled)
         logger.info(f"Loop {'enabled' if enabled else 'disabled'}")
 
     def seek(self, seconds: float) -> None:
         """Seek to position in seconds."""
-        if self._source_reader:
-            frame = int(seconds * self.sample_rate)
-            self._source_reader.set_position(frame)
-            logger.info(f"Seeked to {seconds:.2f}s")
+        frame = int(seconds * self.sample_rate)
+        for source_reader in self._source_readers.values():
+            source_reader.set_position(frame)
+        logger.info(f"Seeked to {seconds:.2f}s")
 
     def get_transport_info(self) -> TransportInfo:
         """Get current transport state information."""
         with self._transport_lock:
             state = self._transport_state
 
-        if self._audio_file is None:
+        if not self._audio_files:
             return TransportInfo(
                 state=state,
                 position_frames=0,
@@ -177,9 +199,13 @@ class AudioEngine:
                 loop_enabled=self._loop_enabled,
             )
 
+        # For multi-file, return info based on the first file
+        first_file_id = next(iter(self._audio_files.keys()))
+        audio_file = self._audio_files[first_file_id]
+
         position_frames = (
-            self._source_reader.get_position()
-            if self._source_reader else 0
+            self._source_readers[first_file_id].get_position()
+            if first_file_id in self._source_readers else 0
         )
         position_seconds = position_frames / self.sample_rate
 
@@ -187,8 +213,8 @@ class AudioEngine:
             state=state,
             position_frames=position_frames,
             position_seconds=position_seconds,
-            total_frames=self._audio_file.total_frames,
-            total_seconds=self._audio_file.duration_seconds,
+            total_frames=audio_file.total_frames,
+            total_seconds=audio_file.duration_seconds,
             loop_enabled=self._loop_enabled,
         )
 
@@ -209,9 +235,9 @@ class AudioEngine:
         logger.info("Shutting down audio engine")
         self.stop()
         self._close_stream()
-        self._audio_file = None
-        self._source_reader = None
-        self._block_processor = None
+        self._audio_files.clear()
+        self._source_readers.clear()
+        self._block_processors.clear()
 
     def _ensure_stream(self) -> None:
         """Ensure output stream is open and started."""
@@ -270,30 +296,35 @@ class AudioEngine:
         with self._transport_lock:
             state = self._transport_state
 
-        if state != TransportState.PLAYING or self._block_processor is None:
+        if state != TransportState.PLAYING or not self._block_processors:
             outdata.fill(0)
             return
 
         try:
-            # Process audio block
-            block = self._block_processor.process(frames)
-
+            # Process audio blocks from all files and mix
+            mixed_block = np.zeros((frames, self._channels), dtype=np.float32)
+            
+            for processor in self._block_processors.values():
+                block = processor.process(frames)
+                # Mix by adding (with clipping to prevent overflow)
+                mixed_block += block
             # Ensure correct shape
-            if block.shape[0] != frames:
+            if mixed_block.shape[0] != frames:
                 # Handle size mismatch
                 outdata.fill(0)
-                copy_len = min(block.shape[0], frames)
-                outdata[:copy_len] = block[:copy_len]
-            elif block.shape[1] != outdata.shape[1]:
+                copy_len = min(mixed_block.shape[0], frames)
+                outdata[:copy_len] = mixed_block[:copy_len]
+            elif mixed_block.shape[1] != outdata.shape[1]:
                 # Handle channel mismatch
                 outdata.fill(0)
-                copy_channels = min(block.shape[1], outdata.shape[1])
-                outdata[:, :copy_channels] = block[:, :copy_channels]
+                copy_channels = min(mixed_block.shape[1], outdata.shape[1])
+                outdata[:, :copy_channels] = mixed_block[:, :copy_channels]
             else:
-                outdata[:] = block
+                outdata[:] = mixed_block
 
-            # Check if playback is complete
-            if self._block_processor.is_source_exhausted():
+            # Check if all sources are exhausted
+            all_exhausted = all(p.is_source_exhausted() for p in self._block_processors.values())
+            if all_exhausted:
                 with self._transport_lock:
                     self._transport_state = TransportState.STOPPED
 

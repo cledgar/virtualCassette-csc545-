@@ -10,7 +10,7 @@ import numpy as np
 import soundfile as sf
 from scipy import signal
 
-from ..models.audio_file import AudioFile
+from models.audio_file import AudioFile
 
 logger = logging.getLogger(__name__)
 

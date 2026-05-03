@@ -8,11 +8,11 @@ Source -> Speed -> Echo -> Gain -> Limiter
 import numpy as np
 from typing import Optional
 
-from ..models.parameters import ParameterStore, EffectParameters
-from ..dsp.echo import EchoProcessor
-from ..dsp.utils import db_to_linear
+from models.parameters import ParameterStore, EffectParameters
+from dsp.echo import EchoProcessor
+from dsp.utils import db_to_linear
 from .source_reader import SourceReader
-from .. import config
+import config
 
 
 class BlockProcessor:
@@ -27,7 +27,8 @@ class BlockProcessor:
         source_reader: SourceReader,
         parameter_store: ParameterStore,
         sample_rate: int,
-        channels: int
+        channels: int,
+        file_id: str
     ):
         """
         Initialize block processor.
@@ -37,11 +38,13 @@ class BlockProcessor:
             parameter_store: Thread-safe parameter store
             sample_rate: Audio sample rate
             channels: Number of audio channels
+            file_id: ID of the audio file this processor handles
         """
         self.source_reader = source_reader
         self.parameter_store = parameter_store
         self.sample_rate = sample_rate
         self.channels = channels
+        self.file_id = file_id
 
         # Initialize DSP processors
         self.echo_processor = EchoProcessor(
@@ -77,7 +80,7 @@ class BlockProcessor:
             Processed audio block (output_frames, channels)
         """
         # Get current parameter snapshot
-        params = self.parameter_store.get_snapshot()
+        params = self.parameter_store.get_snapshot_for_file(self.file_id)
 
         # Apply parameter smoothing
         target_speed = params.speed if not params.bypass_speed else 1.0

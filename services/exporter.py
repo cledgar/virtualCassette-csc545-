@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, Callable, Optional
 import numpy as np
 import soundfile as sf
 
-from .. import config
+import config
 
 if TYPE_CHECKING:
-    from ..models import AudioFile, EffectParameters
+    from models import AudioFile, EffectParameters
 
 logger = logging.getLogger(__name__)
 
@@ -43,17 +43,17 @@ class Exporter:
 
     def export(
         self,
-        audio_file: "AudioFile",
-        params: "EffectParameters",
+        audio_files: list["AudioFile"],
+        params_dict: dict[str, "EffectParameters"],
         output_path: str | Path,
         progress_callback: Optional[Callable[[float], None]] = None,
     ) -> Path:
         """
-        Export audio with current effect settings.
+        Export mixed audio with current effect settings for all files.
 
         Args:
-            audio_file: Source audio file
-            params: Effect parameters to apply
+            audio_files: List of source audio files
+            params_dict: Dict of file_id -> EffectParameters
             output_path: Path for output file
             progress_callback: Optional callback for progress updates (0.0-1.0)
 
@@ -63,91 +63,109 @@ class Exporter:
         Raises:
             ExportError: If export fails
         """
-        from ..engine.source_reader import SourceReader
-        from ..dsp.echo import EchoProcessor
-        from ..dsp.utils import db_to_linear
+        from engine.source_reader import SourceReader
+        from dsp.echo import EchoProcessor
+        from dsp.utils import db_to_linear
 
         output_path = Path(output_path)
 
         # Ensure output directory exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
+        if not audio_files:
+            raise ExportError("No audio files to export")
+
+        # Assume all files have same sample rate and channels
+        sample_rate = audio_files[0].sample_rate
+        channels = audio_files[0].channel_count
+
         try:
-            # Create fresh DSP processors for export
-            source_reader = SourceReader(
-                audio_file.data,
-                audio_file.total_frames,
-                loop_enabled=False
-            )
+            # Create DSP processors for each file
+            source_readers = {}
+            echo_procs = {}
+            
+            for audio_file in audio_files:
+                file_id = audio_file.id
+                params = params_dict.get(file_id)
+                if not params:
+                    continue  # Skip if no params
+                
+                source_readers[file_id] = SourceReader(
+                    audio_file.data,
+                    audio_file.total_frames,
+                    loop_enabled=False
+                )
+                
+                echo_procs[file_id] = EchoProcessor(
+                    sample_rate,
+                    channels,
+                    max_delay_ms=config.MAX_ECHO_BUFFER_MS
+                )
 
-            echo_proc = EchoProcessor(
-                self.sample_rate,
-                audio_file.channel_count,
-                max_delay_ms=config.MAX_ECHO_BUFFER_MS
-            )
+            # Calculate max duration
+            max_frames = max(f.total_frames for f in audio_files)
+            tail_frames = int(config.EXPORT_TAIL_SECONDS * sample_rate)
+            total_frames = max_frames + tail_frames
 
-            # Calculate effective speed
-            effective_speed = params.speed if not params.bypass_speed else 1.0
-
-            # Estimate total output frames
-            source_frames = audio_file.total_frames
-            estimated_output_frames = int(source_frames / effective_speed)
-
-            # Add tail for effects
-            tail_frames = int(config.EXPORT_TAIL_SECONDS * self.sample_rate)
-            total_frames = estimated_output_frames + tail_frames
-
-            # Gain multiplier
-            gain = db_to_linear(params.output_gain_db)
-
-            logger.info(f"Exporting to {output_path}")
-            logger.info(f"Estimated duration: {total_frames / self.sample_rate:.2f}s")
+            logger.info(f"Exporting {len(audio_files)} files to {output_path}")
+            logger.info(f"Estimated duration: {total_frames / sample_rate:.2f}s")
 
             # Open output file for streaming write
             with sf.SoundFile(
                 str(output_path),
                 mode="w",
-                samplerate=self.sample_rate,
-                channels=audio_file.channel_count,
+                samplerate=sample_rate,
+                channels=channels,
                 format="WAV",
                 subtype="FLOAT",
             ) as outfile:
 
                 frames_written = 0
-                source_exhausted = False
+                sources_exhausted = {fid: False for fid in source_readers}
 
                 while frames_written < total_frames:
-                    # Read block from source
-                    if not source_exhausted:
-                        block, exhausted = source_reader.read(
-                            self.block_size,
-                            effective_speed
-                        )
-                        if exhausted:
-                            source_exhausted = True
-                    else:
-                        # Generate silence for tail rendering
-                        block = np.zeros(
-                            (self.block_size, audio_file.channel_count),
-                            dtype=np.float32
+                    # Mix block from all sources
+                    mixed_block = np.zeros((self.block_size, channels), dtype=np.float32)
+                    
+                    for file_id, source_reader in source_readers.items():
+                        params = params_dict[file_id]
+                        echo_proc = echo_procs[file_id]
+                        
+                        # Read block from source
+                        if not sources_exhausted[file_id]:
+                            effective_speed = params.speed if not params.bypass_speed else 1.0
+                            block, exhausted = source_reader.read(
+                                self.block_size,
+                                effective_speed
+                            )
+                            if exhausted:
+                                sources_exhausted[file_id] = True
+                        else:
+                            # Generate silence for tail rendering
+                            block = np.zeros((self.block_size, channels), dtype=np.float32)
+
+                        # Apply echo
+                        block = echo_proc.process(
+                            block,
+                            params.echo_mix,
+                            params.echo_delay_ms,
+                            params.echo_feedback,
+                            bypass=params.bypass_echo
                         )
 
-                    # Apply echo
-                    block = echo_proc.process(
-                        block,
-                        params.echo_mix,
-                        params.echo_delay_ms,
-                        params.echo_feedback,
-                        bypass=params.bypass_echo
-                    )
+                        # Apply gain
+                        gain = db_to_linear(params.output_gain_db)
+                        block = block * gain
+                        
+                        # Add to mix
+                        mixed_block += block
 
-                    # Apply gain and clip
-                    block = block * gain
-                    block = np.clip(block, -1.0, 1.0)
+                    # Clip final mix
+                    mixed_block = np.clip(mixed_block, -1.0, 1.0)
 
                     # Write to file
-                    outfile.write(block)
-                    frames_written += len(block)
+                    outfile.write(mixed_block)
+                    frames_written += len(mixed_block)
 
                     # Progress callback
                     if progress_callback:
